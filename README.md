@@ -1,7 +1,8 @@
-<img width="1599" height="791" alt="image" src="https://github.com/user-attachments/assets/c98544d1-d825-44b3-a8c4-0357aaf7e47b" />
 Physical Ocean Simulation 
 
 A real-time browser-based ocean simulation focused on physically motivated wave and boat dynamics.
+
+<img width="1599" height="791" alt="image" src="https://github.com/user-attachments/assets/c98544d1-d825-44b3-a8c4-0357aaf7e47b" />
 
 The simulation combines a spectral ocean model with Gerstner wave reconstruction and a physics-based floating boat model. The ocean surface is generated from a Pierson–Moskowitz wave spectrum and evolves continuously in real time. Wave numbers are obtained from the linear dispersion relation, including finite-depth effects.
 
