@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fiziksel Okyanus 3D FPS</title>
+<style>:root{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;background:#000}canvas{display:block}
+#h{position:fixed;left:8px;top:calc(8px + env(safe-area-inset-top,0px));color:#cfe;font:12px monospace;background:rgba(0,10,20,.65);padding:8px;white-space:pre}</style></head><body>
+<div id="h"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const g=9.81,N=32,cell=2,SZ=400;
+let U=14,comps=[],info={},t=0;
+const PM=(w,w0)=>0.0081*g*g/Math.pow(w,5)*Math.exp(-1.25*Math.pow(w0/w,4)); // Pierson-Moskowitz
+const rng=s=>()=>(s=s*16807%2147483647)/2147483647;
+const uA=[],uB=[];for(let i=0;i<N;i++){uA.push(new THREE.Vector4());uB.push(new THREE.Vector2())}
+let Hd=200,stokes=[0,0];
+// ω²=g k tanh(kh): Newton iterasyonu (limit: kh→∞ derin su, kh→0 sığ su c=√(gh))
+function kdisp(w){let k=w*w/g;for(let i=0;i<40;i++){const th=Math.tanh(k*Hd),f=g*k*th-w*w,d=g*th+g*k*Hd*(1-th*th);k-=f/d}return k}
+const cgf=(w,k)=>{const kh=k*Hd;return .5*(w/k)*(1+(kh>20?0:2*kh/Math.sinh(2*kh)))}; // cg=dω/dk
+function build(){
+  const w0=.877*g/U,wmin=.55*w0,wmax=3.5*w0,dw=(wmax-wmin)/N,r=rng(777),wd=0.6;
+  comps=[];
+  for(let i=0;i<N;i++){const w=wmin+(i+.5)*dw,k=kdisp(w),th=((i*.6180339)%1-.5)*Math.PI*.95,D=2/Math.PI*Math.cos(th)**2,an=wd+th;
+    // sığlaşma: enerji akısı E·cg sabit -> a ∝ 1/√cg
+    const a=Math.sqrt(2*PM(w,w0)*D*dw*Math.PI*.95*(g/(2*w))/cgf(w,k));
+    comps.push({dx:Math.cos(an),dz:Math.sin(an),k,a,w,p:r()*6.2832})}
+  let m0=0;comps.forEach(c=>m0+=c.a*c.a/2);let Hs=4*Math.sqrt(m0),sc=1;
+  if(Hs>.78*Hd)sc=.78*Hd/Hs; // derinlik sınırlı kırılma Hs≤0.78h
+  let st=0;comps.forEach(c=>{c.a*=sc;st+=c.a*c.k});if(st>.9){const q=.9/st;comps.forEach(c=>c.a*=q);sc*=q}
+  stokes=[0,0];m0=0;
+  comps.forEach((c,i)=>{m0+=c.a*c.a/2;const kh=c.k*Hd,f=kh>12?1:Math.cosh(2*kh)/(2*Math.sinh(kh)**2),us=c.a*c.a*c.w*c.k*f; // Stokes sürüklenmesi
+    stokes[0]+=us*c.dx;stokes[1]+=us*c.dz;uA[i].set(c.dx,c.dz,c.k,c.a);uB[i].set(c.w,c.p)});
+  const k0=kdisp(w0);info={Hs:4*Math.sqrt(m0),Tp:2*Math.PI/w0,lam:2*Math.PI/k0,m0,sc,c:w0/k0,cg:cgf(w0,k0)}}
+// Gerstner: X=x0-Σ d a sinθ, Y=Σ a cosθ, θ=k·x0-ωt+φ  (ve Jacobian türevleri)
+function lag(x0,z0,t){let X=x0,Z=z0,Y=0,Axx=1,Azz=1,Axz=0,Yx=0,Yz=0,vX=0,vZ=0,vY=0;
+  for(const c of comps){const th=c.k*(c.dx*x0+c.dz*z0)-c.w*t+c.p,s=Math.sin(th),co=Math.cos(th),ak=c.a*c.k;
+    X-=c.dx*c.a*s;Z-=c.dz*c.a*s;Y+=c.a*co;Axx-=c.dx*c.dx*ak*co;Azz-=c.dz*c.dz*ak*co;Axz-=c.dx*c.dz*ak*co;Yx-=c.dx*ak*s;Yz-=c.dz*ak*s;vX+=c.dx*c.a*c.w*co;vZ+=c.dz*c.a*c.w*co;vY+=c.a*c.w*s}
+  return{X,Y,Z,Axx,Azz,Axz,Yx,Yz,vX,vZ,vY}}
+function surf(x,z,t,n=12){let p=[x,z],q;for(let i=0;i<n;i++){q=lag(p[0],p[1],t);p=[p[0]-(q.X-x),p[1]-(q.Z-z)]}return lag(p[0],p[1],t)}
+const skyU={uTex:{value:null},uUse:{value:0}};
+const SKY=`uniform sampler2D uTex;uniform float uUse;const vec3 SUN=vec3(.408,.2856,-.867);
+vec3 skyc(vec3 d){if(uUse>.5){return texture2D(uTex,vec2(atan(d.z,d.x)*.159155+.5,asin(clamp(d.y,-1.,1.))*.31831+.5)).rgb;}float h=max(d.y,0.);vec3 c=mix(vec3(.78,.86,.92),vec3(.12,.34,.72),pow(h,.45));
+float s=max(dot(d,SUN),0.);return c+vec3(1.,.85,.6)*(pow(s,700.)*10.+pow(s,8.)*.25);}`;
+const ren=new THREE.WebGLRenderer({antialias:true});ren.setPixelRatio(Math.min(devicePixelRatio,1.5));
+document.body.appendChild(ren.domElement);
+const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(70,1,.1,12000);cam.rotation.order='YXZ';
+function rs(){ren.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}rs();addEventListener('resize',rs);
+const geo=new THREE.PlaneGeometry(SZ,SZ,SZ/cell,SZ/cell);geo.rotateX(-Math.PI/2);
+const ocean=new THREE.Mesh(geo,new THREE.ShaderMaterial({
+  uniforms:{...skyU,uA:{value:uA},uB:{value:uB},uT:{value:0},uOff:{value:new THREE.Vector2()}},
+  vertexShader:`uniform vec4 uA[${N}];uniform vec2 uB[${N}];uniform float uT;uniform vec2 uOff;
+varying vec3 vW,vN;varying float vJ,vH;
+void main(){vec2 p0=position.xz+uOff;vec3 P=vec3(p0.x,0.,p0.y);float Axx=1.,Azz=1.,Axz=0.,Yx=0.,Yz=0.;
+for(int i=0;i<${N};i++){vec4 A=uA[i];float th=A.z*dot(A.xy,p0)-uB[i].x*uT+uB[i].y;float s=sin(th),c=cos(th),ak=A.w*A.z;
+P.x-=A.x*A.w*s;P.z-=A.y*A.w*s;P.y+=A.w*c;Axx-=A.x*A.x*ak*c;Azz-=A.y*A.y*ak*c;Axz-=A.x*A.y*ak*c;Yx-=A.x*ak*s;Yz-=A.y*ak*s;}
+vN=normalize(cross(vec3(Axz,Yz,Azz),vec3(Axx,Yx,Axz)));vJ=Axx*Azz-Axz*Axz;vH=P.y;vW=P;
+gl_Position=projectionMatrix*viewMatrix*vec4(P,1.);}`,
+  fragmentShader:`varying vec3 vW,vN;varying float vJ,vH;${SKY}
+void main(){vec3 N=normalize(vN),V=normalize(cameraPosition-vW);float nv=max(dot(N,V),0.);
+float F=.02+.98*pow(1.-nv,5.);vec3 R=reflect(-V,N);R.y=abs(R.y);
+vec3 body=mix(vec3(.01,.07,.13),vec3(.03,.38,.42),clamp(.35+vH*.12,0.,1.)*clamp(nv+.2,0.,1.));
+vec3 col=mix(body,skyc(R),F);col=mix(col,vec3(.92,.96,.98),smoothstep(.5,.15,vJ)*.85);
+float d=length(vW-cameraPosition);col=mix(col,skyc(normalize(vec3(-V.x,.03,-V.z))),1.-exp(-d*d*4e-5));
+gl_FragColor=vec4(col,1.);}`}));
+ocean.frustumCulled=false;scene.add(ocean);
+const dome=new THREE.Mesh(new THREE.SphereGeometry(5000,24,16),new THREE.ShaderMaterial({uniforms:skyU,side:THREE.BackSide,depthWrite:false,
+  vertexShader:`varying vec3 vD;void main(){vD=position;gl_Position=projectionMatrix*viewMatrix*modelMatrix*vec4(position,1.);}`,
+  fragmentShader:`varying vec3 vD;${SKY}void main(){gl_FragColor=vec4(skyc(normalize(vD)),1.);}`}));
+dome.renderOrder=-1;scene.add(dome);
+scene.add(new THREE.AmbientLight(0xffffff,.6));const dl=new THREE.DirectionalLight(0xfff0d0,.9);dl.position.set(.408,.2856,-.867);scene.add(dl);
+// Şamandıralar: sabit x0,z0 -> Lagrange konumu (gerçek parçacık yolu)
+const buoys=[[8,-20],[-14,-35],[25,-50],[-30,-12]].map(p=>{const m=new THREE.Mesh(new THREE.SphereGeometry(.8,16,12),new THREE.MeshLambertMaterial({color:0xe03030}));m.userData=p;scene.add(m);return m});
+// ---- TEKNE ----
+const cl=(v,a=-1,b=1)=>Math.max(a,Math.min(b,v));
+const boat=new THREE.Group();boat.rotation.order='YXZ';scene.add(boat);
+(function(){const sh=new THREE.Shape();sh.moveTo(-1.2,-3);sh.lineTo(1.2,-3);sh.lineTo(1.2,.8);sh.quadraticCurveTo(1,2.2,0,3.5);sh.quadraticCurveTo(-1,2.2,-1.2,.8);sh.closePath();
+  const gm=new THREE.ExtrudeGeometry(sh,{depth:1.4,bevelEnabled:false});gm.rotateX(-Math.PI/2); // baş -Z, kıç +Z
+  boat.add(new THREE.Mesh(gm,new THREE.MeshLambertMaterial({color:0xf2f2f2})));
+  const bx=(w,h,d,x,y,z,c,o)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshLambertMaterial({color:c,transparent:o<1,opacity:o}));m.position.set(x,y,z);boat.add(m)};
+  bx(1.9,.3,1.1,0,1.6,2.2,0x555555,1);bx(1.9,.55,.06,0,1.7,-.3,0x99ccff,.3);bx(1.9,.25,.5,0,1.52,-.05,0x222222,1);bx(2.45,.12,6.3,0,1.45,.1,0xb03030,1);
+  bx(.5,.7,.4,0,1.1,3.2,0x333333,1)})();
+// Gövde: hull yüzeyi 14x6 hücreye bölünür; Arşimet kuvveti F=ρg∬d dA sayısal integralle (yüzeye ait d, dalga yüksekliğinden)
+const RHO=1025,D0=.7,CDV=1500,NA=10,NB=4,A0=-3,A1=3.5,HC=[];let MASS=1,IP=1,IR=1,tgtT=0,tgtS=0;
+(function(){const da=(A1-A0)/NA;for(let i=0;i<NA;i++){const a=A0+(i+.5)*da,w=a<.8?1.2:1.2*Math.sqrt(Math.max(0,1-((a-.8)/2.7)**2)),db=2*w/NB;
+  for(let j=0;j<NB;j++){const b=-w+(j+.5)*db,hb=.5*Math.abs(b)/1.2+(a>1.5?.8*((a-1.5)/2)**2:0);HC.push({a,b,hb,A:da*db,top:1.4-hb})}}
+  let V=0;HC.forEach(c=>V+=c.A*Math.min(Math.max(D0-c.hb,0),c.top));MASS=RHO*V;IP=MASS*4.84;IR=MASS*1.44})(); // kütle = ρ·hacim (integral)
+const B={x:0,z:0,psi:0,v:0,vx:0,vz:0,y:0,vy:0,pit:0,wp:0,rol:0,wr:0,thr:0,sy:0};
+function stepBoat(dt){
+  const f=[-Math.sin(B.psi),-Math.cos(B.psi)],r=[Math.cos(B.psi),-Math.sin(B.psi)];let Fz=0,Mp=0,Mr=0,Fx=0,Fy=0;
+  for(const c of HC){const q=surf(B.x+f[0]*c.a+r[0]*c.b,B.z+f[1]*c.a+r[1]*c.b,t,3),d=Math.min(Math.max(q.Y-(B.y+c.a*B.pit+c.b*B.rol+c.hb),0),c.top);
+    if(d>0){const J=q.Axx*q.Azz-q.Axz*q.Axz,sx=(q.Yx*q.Azz-q.Yz*q.Axz)/J,sz=(q.Yz*q.Axx-q.Yx*q.Axz)/J,p=RHO*g*d*c.A, // sx,sz = ∇η (türev)
+      dF=p-CDV*c.A*(B.vy+c.a*B.wp+c.b*B.wr-q.vY); // suya göre bağıl dikey hız (∂Y/∂t)
+      Fz+=dF;Mp+=dF*c.a;Mr+=dF*c.b;Fx-=p*sx;Fy-=p*sz}} // kaldırma yüzey normaline dik -> yatay bileşen -p∇η
+  B.vy+=(Fz/MASS-g)*dt;B.wp+=Mp/IP*dt;B.wr+=Mr/IR*dt;
+  B.y+=B.vy*dt;B.pit=cl(B.pit+B.wp*dt,-.7,.7);B.rol=cl(B.rol+B.wr*dt,-.7,.7);
+  const q0=lag(B.x,B.z,t),rx=B.vx-q0.vX-stokes[0],rz=B.vz-q0.vZ-stokes[1],u=rx*f[0]+rz*f[1],vl=rx*r[0]+rz*r[1];
+  const T=9000*(B.thr>=0?B.thr:B.thr*.5),wf=.5*1.2*8*U*U*.8; // rüzgar: ½ρ_hava Cd A U²
+  B.vx+=((T-40*u*Math.abs(u))*f[0]-400*vl*Math.abs(vl)*r[0]+Fx+wf*Math.cos(.6))/MASS*dt;
+  B.vz+=((T-40*u*Math.abs(u))*f[1]-400*vl*Math.abs(vl)*r[1]+Fy+wf*Math.sin(.6))/MASS*dt;
+  B.x+=B.vx*dt;B.z+=B.vz*dt;B.v=B.vx*f[0]+B.vz*f[1];
+  B.sy+=(tgtS-B.sy)*Math.min(1,dt*3);B.psi+=B.sy*.9*Math.min(1,Math.abs(u)/4+.15)*(u<0?-1:1)*dt}
+B.y=surf(0,0,0).Y-D0;
+// ---- KONTROLLER (PC + mobil) ----
+const keys={},cvs=ren.domElement,touch='ontouchstart' in window;let lookYaw=0,lookPitch=-.05;
+cvs.style.touchAction='none';
+cvs.onclick=()=>!touch&&cvs.requestPointerLock&&cvs.requestPointerLock();
+addEventListener('mousemove',e=>{if(document.pointerLockElement===cvs){lookYaw=lookYaw-e.movementX*.0022;lookPitch=cl(lookPitch-e.movementY*.0022,-1.2,1.2)}});
+addEventListener('keydown',e=>keys[e.code]=1);addEventListener('keyup',e=>keys[e.code]=0);
+const joy=document.createElement('div');joy.style.cssText='position:fixed;left:24px;bottom:calc(24px + env(safe-area-inset-bottom,0px));width:130px;height:130px;border-radius:50%;background:rgba(255,255,255,.15);touch-action:none;display:'+(touch?'block':'none');
+const knob=document.createElement('div');knob.style.cssText='position:absolute;left:45px;top:45px;width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.5)';joy.appendChild(knob);document.body.appendChild(joy);
+let jt=null,lt=null,lx=0,ly=0;const tj={x:0,y:0};
+function mj(c){const r=joy.getBoundingClientRect(),dx=(c.clientX-r.left-65)/55,dy=(c.clientY-r.top-65)/55,m=Math.hypot(dx,dy),k=m>1?1/m:1;tj.x=dx*k;tj.y=dy*k;knob.style.transform=`translate(${tj.x*45}px,${tj.y*45}px)`}
+joy.addEventListener('touchstart',e=>{jt=e.changedTouches[0].identifier;mj(e.changedTouches[0])});
+cvs.addEventListener('touchstart',e=>{for(const c of e.changedTouches)if(lt===null){lt=c.identifier;lx=c.clientX;ly=c.clientY}});
+addEventListener('touchmove',e=>{for(const c of e.changedTouches){if(c.identifier===jt)mj(c);else if(c.identifier===lt){lookYaw=lookYaw-(c.clientX-lx)*.005;lookPitch=cl(lookPitch-(c.clientY-ly)*.005,-1.2,1.2);lx=c.clientX;ly=c.clientY}}});
+addEventListener('touchend',e=>{for(const c of e.changedTouches){if(c.identifier===jt){jt=null;tj.x=tj.y=0;knob.style.transform=''}if(c.identifier===lt)lt=null}});
+const ui={t:0,s:0};
+const hud=document.getElementById('h');
+hud.innerHTML='<span id=tx></span>\nRüzgar U: <input id=u type=range min=4 max=25 step=.5 value=14> <b id=uv>14</b> m/s\nDerinlik h: <input id=dd type=range min=3 max=200 value=200> <b id=dv>200</b> m';
+document.getElementById('u').oninput=function(){U=+this.value;document.getElementById('uv').textContent=U;build()};
+document.getElementById('dd').oninput=function(){Hd=+this.value;document.getElementById('dv').textContent=Hd;build()};
+build();B.y=surf(0,0,0).Y-D0;let last=performance.now(),fps=60,hu=0;
+function loop(now){requestAnimationFrame(loop);const dt=Math.min((now-last)/1000,.033);last=now;t+=dt;fps+=(1/Math.max(dt,1e-3)-fps)*.05;
+  let tt=0,ts=0;if(keys.KeyW||keys.ArrowUp)tt++;if(keys.KeyS||keys.ArrowDown)tt--;if(keys.KeyA||keys.ArrowLeft)ts++;if(keys.KeyD||keys.ArrowRight)ts--;
+  tt=cl(tt-tj.y+ui.t);tgtS=cl(ts-tj.x+ui.s);B.thr+=(tt-B.thr)*Math.min(1,dt*1.5);
+  stepBoat(dt);
+  boat.position.set(B.x,B.y,B.z);boat.rotation.set(B.pit,B.psi,B.rol);boat.updateMatrixWorld(true);
+  cam.position.copy(boat.localToWorld(new THREE.Vector3(0,2.15,.7)));
+  cam.rotation.set(lookPitch+.8*B.pit,B.psi+lookYaw,.6*B.rol);
+  dome.position.copy(cam.position);
+  ocean.material.uniforms.uT.value=t;ocean.material.uniforms.uOff.value.set(Math.round(B.x/cell)*cell,Math.round(B.z/cell)*cell);
+  buoys.forEach(b=>{const q=lag(b.userData[0],b.userData[1],t);b.position.set(q.X,q.Y,q.Z)});
+  if(now-hu>200){hu=now;const s=surf(B.x,B.z,t),J=s.Axx*s.Azz-s.Axz*s.Axz,an=(s.Yx*s.Azz-s.Yz*s.Axz)/J,h=1e-3,lim=(surf(B.x+h,B.z,t).Y-s.Y)/h;
+    document.getElementById('tx').textContent=`FPS ${fps.toFixed(0)}  t=${t.toFixed(0)}s
+Hs=4√m₀=${info.Hs.toFixed(2)} m  Tp=${info.Tp.toFixed(1)} s  λp=${info.lam.toFixed(0)} m
+m₀=∫S(ω)dω=${info.m0.toFixed(3)} m²  h=${Hd} m  cg=${info.cg.toFixed(1)} m/s
+Deplasman ρ∬d dA=${(MASS/1000).toFixed(1)} t  Stokes ${Math.hypot(stokes[0],stokes[1]).toFixed(2)} m/s
+Hız ${B.v.toFixed(1)} m/s (${(B.v*1.944).toFixed(0)} knot)
+Yunuslama ${(B.pit*57.3).toFixed(1)}°  Yalpa ${(B.rol*57.3).toFixed(1)}°
+∂η/∂x analitik ${an.toFixed(5)} | limit ${lim.toFixed(5)}
+PC: W/S gaz, A/D dümen, fare bakış
+Mobil: sol joystick + ekranı sürükle`}
+  ren.render(scene,cam)}
+requestAnimationFrame(loop);
+</script></body></html>
